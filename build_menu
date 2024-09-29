@@ -7,7 +7,7 @@ DIR="$(pwd)"
 PARENT_DIR="$(pwd)"
 
 echo "Cloning dependencies"
-git clone --depth=1 --branch stock_s21_fe https://github.com/prorooter007/samsung_s21_fe_kernel kernel
+git clone --depth=1 --branch stock_s21_fe https://github.com/parziva-1/samsung_s21_fe_kernel kernel
 cd kernel 
 git clone --depth=1 --branch android-11.0.0_r48 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 aarch64-linux-android-4.9
 git clone --depth=1  https://github.com/prorooter007/android_prebuilts_clang_host_linux-x86_clang-6877366 clang-r383902
@@ -43,8 +43,8 @@ STD=`echo -e "\033[0m"`		# Text Clear
 build_kernel(){  
   echo "${BGREEN}***** Compiling kernel *****${STD}"
   [ ! -d "$OUT_DIR" ] && mkdir $OUT_DIR
-  make -j$(nproc) -C $(pwd) $KERNEL_MAKE_ENV exynos2100-r9sxxx_defconfig
-  make -j$(nproc) -C $(pwd) $KERNEL_MAKE_ENV
+  make -j$(($(nproc) + 2)) -C $(pwd) $KERNEL_MAKE_ENV exynos2100-r9sxxx_defconfig
+  make -j$(($(nproc) + 2)) -C $(pwd) $KERNEL_MAKE_ENV
 
   [ -e "$(pwd)/arch/arm64/boot/Image.gz" ] && cp "$(pwd)/arch/arm64/boot/Image.gz" $OUT_DIR/Image.gz
   if [ -e "$(pwd)/arch/arm64/boot/Image" ]; then
@@ -62,7 +62,7 @@ build_kernel(){
     git reset --hard
     cp $IMAGE zImage
     cp $OUT_DIR/dtbo.img dtbo.img
-    sed -i "s/ExampleKernel by osm0sis/exynos2100-r9sxxx Stock kernel by prorooter007/g" anykernel.sh
+    sed -i "s/ExampleKernel by osm0sis/exynos2100-r9sxxx Stock kernel by prorooter007 edited by parziva-1/g" anykernel.sh
     sed -i "s/=maguro/=r9s/g" anykernel.sh
     sed -i "s/=toroplus/=/g" anykernel.sh
     sed -i "s/=toro/=/g" anykernel.sh
