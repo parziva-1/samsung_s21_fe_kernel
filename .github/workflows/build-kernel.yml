@@ -19,21 +19,26 @@ jobs:
       fail-fast: false
       matrix:
         variant:
-          # CULPABLES CONFIRMADOS: SYSVIPC/IPC_NS (run 27100163433) y CGROUP_DEVICE+CGROUP_PIDS juntos
-          # (run 27101600325: D1=PID_NS+DEVICE+PIDS BOOTLOOP, P1a=PID_NS solo BUTEA). Base = PID_NS.
-          # Tanda E: aislar device vs pids (¿uno solo butea?) y maximizar features que SI pueden botar.
-          - name: E-dev             # ¿CGROUP_DEVICE solo butea? (-> --device, acceso /dev en contenedores)
-            enable: "PID_NS CGROUP_DEVICE"
-          - name: E-pids            # ¿CGROUP_PIDS solo butea? (-> --pids-limit)
-            enable: "PID_NS CGROUP_PIDS"
-          - name: E-net             # netfilter bridge -> red propia de contenedores (no --net=host)
-            enable: "PID_NS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS NF_CONNTRACK_BRIDGE"
-          - name: E-sched           # CFS_BANDWIDTH + throttling -> limites --cpus / --io (warnings de docker info)
-            enable: "PID_NS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING"
-          - name: E-userns          # USER_NS solo (rootless / userns-remap)
-            enable: "PID_NS USER_NS"
-          - name: E-best            # net + sched + userns + mqueue = kernel optimo (sin device/pids/ipc)
-            enable: "PID_NS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING USER_NS POSIX_MQUEUE"
+          # TANDA F: el reboot al CREAR un contenedor (no al arrancar dockerd) apunta a la seguridad
+          # Knox de Samsung (KDP_NS protege namespaces; RKP/uH resetean ante "violacion"). Cada variante
+          # = configs Docker (CGROUP_DEVICE+PIDS+net+sched+userns+mqueue) + DESACTIVAR seguridad en grupos
+          # para ver cual permite correr contenedores SIN reiniciar (y cual, si alguna, rompe el boot).
+          # enable comun (incluye device/pids: con la seguridad off quiza ya no rompen el boot).
+          - name: F1-nodefex        # quitar verificadores LSM (DEFEX/PROCA/FIVE/DSMS)
+            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING USER_NS POSIX_MQUEUE"
+            disable: "SECURITY_DEFEX PROCA FIVE SECURITY_DSMS"
+          - name: F2-nokdp          # quitar Kernel Data Protection (KDP/KDP_CRED/KDP_NS = protege namespaces)
+            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING USER_NS POSIX_MQUEUE"
+            disable: "KDP KDP_CRED KDP_NS"
+          - name: F3-norkp          # quitar hypervisor RKP/uH (mas arriesgado: puede romper boot)
+            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING USER_NS POSIX_MQUEUE"
+            disable: "UH RKP RKP_FIMC_CHECK"
+          - name: F4-allsecoff      # quitar TODA la seguridad Samsung (maximo)
+            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING USER_NS POSIX_MQUEUE"
+            disable: "SECURITY_DEFEX PROCA FIVE SECURITY_DSMS KDP KDP_CRED KDP_NS UH RKP RKP_FIMC_CHECK KNOX_NCM"
+          - name: F5-defex-kdp      # DEFEX+PROCA+FIVE+DSMS + KDP (sin tocar el hypervisor RKP/uH) = punto medio
+            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING USER_NS POSIX_MQUEUE"
+            disable: "SECURITY_DEFEX PROCA FIVE SECURITY_DSMS KDP KDP_CRED KDP_NS"
     steps:
       - name: Liberar espacio en disco
         uses: jlumbroso/free-disk-space@main
@@ -61,9 +66,18 @@ jobs:
               echo "CONFIG_${c}=y" >> "$DEF"
             fi
           }
+          disable_cfg() {
+            c="$1"
+            if grep -q "^CONFIG_${c}=y" "$DEF"; then
+              sed -i "s/^CONFIG_${c}=y\$/# CONFIG_${c} is not set/" "$DEF"
+            fi
+          }
           for c in ${{ matrix.variant.enable }}; do echo "habilitando CONFIG_$c"; enable_cfg "$c"; done
+          for c in ${{ matrix.variant.disable }}; do echo "DESHABILITANDO CONFIG_$c"; disable_cfg "$c"; done
           echo "=== configs anadidos ==="
           for c in ${{ matrix.variant.enable }}; do grep -E "CONFIG_${c}\b" "$DEF" || echo "CONFIG_${c}: kconfig lo resolvera por deps"; done
+          echo "=== configs desactivados (verificar que quedaron off) ==="
+          for c in ${{ matrix.variant.disable }}; do grep -E "CONFIG_${c}\b" "$DEF" || echo "CONFIG_${c}: ausente/off"; done
 
       - name: Instalar dependencias de build
         run: |
