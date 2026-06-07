@@ -2,7 +2,9 @@ name: Build Lightning Kernel (S21 FE r9s, Docker-enabled)
 
 # Compila el kernel exynos2100-r9sxxx (Samsung Galaxy S21 FE / r9s) con los
 # configs necesarios para Docker y lo empaqueta como zip flasheable (AnyKernel3).
-# Basado en build_menu del repo, adaptado para CI (sube artifact en vez de bashupload).
+# MATRIX: compila varias variantes en paralelo desactivando configs sospechosos
+# de causar bootloop en Samsung (USER_NS choca con RKP; CGROUP_DEVICE/PIDS chocan
+# con la implementacion de Samsung). Sirve para bisecar el culpable del bootloop.
 
 on:
   workflow_dispatch:
@@ -15,6 +17,16 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: A-no-userns
+            disable: "USER_NS"
+          - name: B-no-cgroupdev
+            disable: "CGROUP_DEVICE CGROUP_PIDS"
+          - name: C-minimal
+            disable: "USER_NS CGROUP_DEVICE CGROUP_PIDS"
     steps:
       - name: Liberar espacio en disco
         uses: jlumbroso/free-disk-space@main
@@ -30,6 +42,16 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Desactivar configs sospechosos (variante ${{ matrix.variant.name }})
+        run: |
+          DEF=arch/arm64/configs/exynos2100-r9sxxx_defconfig
+          for c in ${{ matrix.variant.disable }}; do
+            echo "Desactivando CONFIG_$c"
+            sed -i "s/^CONFIG_${c}=y$/# CONFIG_${c} is not set/" "$DEF"
+          done
+          echo "=== estado de los desactivados ==="
+          for c in ${{ matrix.variant.disable }}; do grep -E "CONFIG_${c}" "$DEF" || true; done
 
       - name: Instalar dependencias de build
         run: |
@@ -69,7 +91,7 @@ jobs:
 
       - name: Verificar configs Docker en el .config generado
         run: |
-          echo "===== Configs efectivos tras make defconfig ====="
+          echo "===== Configs efectivos (variante ${{ matrix.variant.name }}) ====="
           for c in POSIX_MQUEUE CGROUP_PIDS CGROUP_DEVICE NAMESPACES PID_NS IPC_NS \
                    NET_NS USER_NS CGROUPS OVERLAY_FS BRIDGE BRIDGE_NETFILTER VETH \
                    NF_NAT NF_CONNTRACK FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING; do
@@ -77,14 +99,14 @@ jobs:
             echo "$line"
           done
           echo "================================================"
-          # Falla el build si alguno de los criticos no quedo en =y
-          for must in POSIX_MQUEUE CGROUP_PIDS CGROUP_DEVICE OVERLAY_FS VETH; do
+          # Criticos que SIEMPRE deben estar (no se desactivan en ninguna variante)
+          for must in PID_NS NET_NS IPC_NS NAMESPACES OVERLAY_FS VETH; do
             if ! grep -q "^CONFIG_${must}=y" .config; then
               echo "ERROR: CONFIG_${must} no quedo habilitado en el .config final"
               exit 1
             fi
           done
-          echo "OK: todos los configs Docker criticos estan en =y"
+          echo "OK: configs criticos base presentes"
 
       - name: Generar dtb / dtbo
         run: |
@@ -99,26 +121,16 @@ jobs:
           cp arch/arm64/boot/Image AnyKernel3/zImage
           cp out/dtbo.img AnyKernel3/dtbo.img
           cd AnyKernel3
-          sed -i "s/ExampleKernel by osm0sis/exynos2100-r9sxxx Lightning (Docker) by parziva-1/g" anykernel.sh
+          sed -i "s/ExampleKernel by osm0sis/exynos2100-r9sxxx Lightning Docker ${{ matrix.variant.name }} by parziva-1/g" anykernel.sh
           sed -i "s/=maguro/=r9s/g" anykernel.sh
           sed -i "s/=toroplus/=/g; s/=toro/=/g; s/=tuna/=/g" anykernel.sh
           sed -i "s#platform/omap/omap_hsmmc.0/by-name/boot#bootdevice/by-name/boot#g" anykernel.sh
           sed -i "s/backup_file/#backup_file/g; s/replace_string/#replace_string/g; s/insert_line/#insert_line/g; s/append_file/#append_file/g; s/patch_fstab/#patch_fstab/g" anykernel.sh
-          zip -r9 ../Lightning-Docker-r9s.zip * -x .git README.md '*placeholder'
+          zip -r9 "../Lightning-Docker-r9s-${{ matrix.variant.name }}.zip" * -x .git README.md '*placeholder'
 
       - name: Subir kernel flasheable (zip)
         uses: actions/upload-artifact@v4
         with:
-          name: Lightning-Docker-r9s
-          path: Lightning-Docker-r9s.zip
+          name: Lightning-Docker-r9s-${{ matrix.variant.name }}
+          path: Lightning-Docker-r9s-${{ matrix.variant.name }}.zip
           if-no-files-found: error
-
-      - name: Subir Image y dtbo sueltos
-        uses: actions/upload-artifact@v4
-        with:
-          name: raw-images
-          path: |
-            arch/arm64/boot/Image
-            out/dtbo.img
-            out/dtb.img
-            .config
