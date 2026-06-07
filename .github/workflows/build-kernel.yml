@@ -19,21 +19,21 @@ jobs:
       fail-fast: false
       matrix:
         variant:
-          # CULPABLE CONFIRMADO (run 27100163433) = SYSVIPC/IPC_NS -> NINGUNA variante los activa.
-          # PID_NS confirmado INOCENTE (butea) -> base de todas. 6 hipotesis en paralelo para hallar
-          # el Docker MAXIMO que BUTEA. Si D6-full butea, Docker completo sin aislamiento IPC (==--ipc=host).
-          - name: D1-cgroup          # cgroups core de Docker (sin userns/net/sched) = Docker minimo
-            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS"
-          - name: D2-userns          # D1 + USER_NS (aislar si USER_NS rompe el boot)
-            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS USER_NS"
-          - name: D3-net             # D1 + netfilter bridge (red de contenedores)
-            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS"
-          - name: D4-sched           # D1 + scheduler/throttling/mqueue (limites --cpus / --io)
-            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING POSIX_MQUEUE"
-          - name: D5-full-nouserns   # TODO menos SYSVIPC/IPC_NS/USER_NS (Docker completo conservador)
-            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING POSIX_MQUEUE"
-          - name: D6-full            # D5 + USER_NS (Docker completo total, sin IPC namespace) = LA APUESTA
-            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS USER_NS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING POSIX_MQUEUE"
+          # CULPABLES CONFIRMADOS: SYSVIPC/IPC_NS (run 27100163433) y CGROUP_DEVICE+CGROUP_PIDS juntos
+          # (run 27101600325: D1=PID_NS+DEVICE+PIDS BOOTLOOP, P1a=PID_NS solo BUTEA). Base = PID_NS.
+          # Tanda E: aislar device vs pids (¿uno solo butea?) y maximizar features que SI pueden botar.
+          - name: E-dev             # ¿CGROUP_DEVICE solo butea? (-> --device, acceso /dev en contenedores)
+            enable: "PID_NS CGROUP_DEVICE"
+          - name: E-pids            # ¿CGROUP_PIDS solo butea? (-> --pids-limit)
+            enable: "PID_NS CGROUP_PIDS"
+          - name: E-net             # netfilter bridge -> red propia de contenedores (no --net=host)
+            enable: "PID_NS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS NF_CONNTRACK_BRIDGE"
+          - name: E-sched           # CFS_BANDWIDTH + throttling -> limites --cpus / --io (warnings de docker info)
+            enable: "PID_NS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING"
+          - name: E-userns          # USER_NS solo (rootless / userns-remap)
+            enable: "PID_NS USER_NS"
+          - name: E-best            # net + sched + userns + mqueue = kernel optimo (sin device/pids/ipc)
+            enable: "PID_NS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING USER_NS POSIX_MQUEUE"
     steps:
       - name: Liberar espacio en disco
         uses: jlumbroso/free-disk-space@main
