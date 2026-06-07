@@ -19,14 +19,21 @@ jobs:
       fail-fast: false
       matrix:
         variant:
-          - name: P0-control        # c1a65bcc puro -> descarta que el problema sea el toolchain/build
-            enable: ""
-          - name: P1-minimal         # Docker minimo: namespaces faltantes
-            enable: "SYSVIPC PID_NS IPC_NS"
-          - name: P1a-pidns          # aislar PID_NS (sospechoso #1)
-            enable: "PID_NS"
-          - name: P1b-ipcns          # aislar IPC (SYSVIPC + IPC_NS, sospechoso #2)
-            enable: "SYSVIPC IPC_NS"
+          # CULPABLE CONFIRMADO (run 27100163433) = SYSVIPC/IPC_NS -> NINGUNA variante los activa.
+          # PID_NS confirmado INOCENTE (butea) -> base de todas. 6 hipotesis en paralelo para hallar
+          # el Docker MAXIMO que BUTEA. Si D6-full butea, Docker completo sin aislamiento IPC (==--ipc=host).
+          - name: D1-cgroup          # cgroups core de Docker (sin userns/net/sched) = Docker minimo
+            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS"
+          - name: D2-userns          # D1 + USER_NS (aislar si USER_NS rompe el boot)
+            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS USER_NS"
+          - name: D3-net             # D1 + netfilter bridge (red de contenedores)
+            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS"
+          - name: D4-sched           # D1 + scheduler/throttling/mqueue (limites --cpus / --io)
+            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING POSIX_MQUEUE"
+          - name: D5-full-nouserns   # TODO menos SYSVIPC/IPC_NS/USER_NS (Docker completo conservador)
+            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING POSIX_MQUEUE"
+          - name: D6-full            # D5 + USER_NS (Docker completo total, sin IPC namespace) = LA APUESTA
+            enable: "PID_NS CGROUP_DEVICE CGROUP_PIDS USER_NS BRIDGE_NETFILTER NETFILTER_FAMILY_BRIDGE BRIDGE_NF_EBTABLES NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_IPVS FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING POSIX_MQUEUE"
     steps:
       - name: Liberar espacio en disco
         uses: jlumbroso/free-disk-space@main
