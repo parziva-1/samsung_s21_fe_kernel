@@ -60,7 +60,9 @@ jobs:
           export PATH="$PATH:$LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN:$CLANG_PREBUILT_BIN"
           export LLVM=1
           make -j"$(nproc)" -C "$(pwd)" exynos2100-r9sxxx_defconfig
-          make -j"$(nproc)" -C "$(pwd)"
+          # -Wno-error: kernel 5.4 de Samsung + clang moderno promueven varios
+          # warnings (p.ej. VLA en proca_certificate.c) a error con -Werror.
+          make -j"$(nproc)" -C "$(pwd)" KCFLAGS="-Wno-error"
 
       - name: Verificar configs Docker en el .config generado
         run: |
