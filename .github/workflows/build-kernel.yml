@@ -57,7 +57,10 @@ jobs:
           export CLANG_TRIPLE="$(pwd)/clang-r383902/bin/aarch64-linux-gnu-"
           export CLANG_PREBUILT_BIN="$(pwd)/clang-r383902/bin"
           export LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN="$(pwd)/aarch64-linux-android-4.9/bin"
-          export PATH="$PATH:$LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN:$CLANG_PREBUILT_BIN"
+          # El clang prebuilt (LLVM 11) debe ir PRIMERO para que clang, llvm-nm,
+          # ld.lld, etc. sean todos de la misma version (el runner trae clang 18,
+          # que mezclado con el llvm-nm 11 del prebuilt rompe el bitcode LTO).
+          export PATH="$CLANG_PREBUILT_BIN:$LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN:$PATH"
           export LLVM=1
           make -j"$(nproc)" -C "$(pwd)" exynos2100-r9sxxx_defconfig
           # -Wno-error: kernel 5.4 de Samsung + clang moderno promueven varios
