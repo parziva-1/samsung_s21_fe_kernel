@@ -1,10 +1,8 @@
 name: Build Lightning Kernel (S21 FE r9s, Docker-enabled)
 
-# Compila el kernel exynos2100-r9sxxx (Samsung Galaxy S21 FE / r9s) con los
-# configs necesarios para Docker y lo empaqueta como zip flasheable (AnyKernel3).
-# MATRIX: compila varias variantes en paralelo desactivando configs sospechosos
-# de causar bootloop en Samsung (USER_NS choca con RKP; CGROUP_DEVICE/PIDS chocan
-# con la implementacion de Samsung). Sirve para bisecar el culpable del bootloop.
+# ESTRATEGIA INCREMENTAL INVERSA: el defconfig base es el de c1a65bcc (kernel que SI BUTEA,
+# sin configs Docker). Cada variante de la MATRIX AnADE configs sobre ese base bueno, para
+# bisecar cual rompe el boot. Compila en paralelo. Empaqueta AnyKernel3 + sube artifact.
 
 on:
   workflow_dispatch:
@@ -21,12 +19,14 @@ jobs:
       fail-fast: false
       matrix:
         variant:
-          - name: A-no-userns
-            disable: "USER_NS"
-          - name: B-no-cgroupdev
-            disable: "CGROUP_DEVICE CGROUP_PIDS"
-          - name: C-minimal
-            disable: "USER_NS CGROUP_DEVICE CGROUP_PIDS"
+          - name: P0-control        # c1a65bcc puro -> descarta que el problema sea el toolchain/build
+            enable: ""
+          - name: P1-minimal         # Docker minimo: namespaces faltantes
+            enable: "SYSVIPC PID_NS IPC_NS"
+          - name: P1a-pidns          # aislar PID_NS (sospechoso #1)
+            enable: "PID_NS"
+          - name: P1b-ipcns          # aislar IPC (SYSVIPC + IPC_NS, sospechoso #2)
+            enable: "SYSVIPC IPC_NS"
     steps:
       - name: Liberar espacio en disco
         uses: jlumbroso/free-disk-space@main
@@ -43,15 +43,20 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Desactivar configs sospechosos (variante ${{ matrix.variant.name }})
+      - name: Habilitar configs sobre el base bueno (variante ${{ matrix.variant.name }})
         run: |
           DEF=arch/arm64/configs/exynos2100-r9sxxx_defconfig
-          for c in ${{ matrix.variant.disable }}; do
-            echo "Desactivando CONFIG_$c"
-            sed -i "s/^CONFIG_${c}=y$/# CONFIG_${c} is not set/" "$DEF"
-          done
-          echo "=== estado de los desactivados ==="
-          for c in ${{ matrix.variant.disable }}; do grep -E "CONFIG_${c}" "$DEF" || true; done
+          enable_cfg() {
+            c="$1"
+            if grep -q "^# CONFIG_${c} is not set" "$DEF"; then
+              sed -i "s/^# CONFIG_${c} is not set\$/CONFIG_${c}=y/" "$DEF"
+            elif ! grep -q "^CONFIG_${c}=y" "$DEF"; then
+              echo "CONFIG_${c}=y" >> "$DEF"
+            fi
+          }
+          for c in ${{ matrix.variant.enable }}; do echo "habilitando CONFIG_$c"; enable_cfg "$c"; done
+          echo "=== configs anadidos ==="
+          for c in ${{ matrix.variant.enable }}; do grep -E "CONFIG_${c}\b" "$DEF" || echo "CONFIG_${c}: kconfig lo resolvera por deps"; done
 
       - name: Instalar dependencias de build
         run: |
@@ -79,34 +84,23 @@ jobs:
           export CLANG_TRIPLE="$(pwd)/clang-r383902/bin/aarch64-linux-gnu-"
           export CLANG_PREBUILT_BIN="$(pwd)/clang-r383902/bin"
           export LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN="$(pwd)/aarch64-linux-android-4.9/bin"
-          # El clang prebuilt (LLVM 11) debe ir PRIMERO para que clang, llvm-nm,
-          # ld.lld, etc. sean todos de la misma version (el runner trae clang 18,
-          # que mezclado con el llvm-nm 11 del prebuilt rompe el bitcode LTO).
           export PATH="$CLANG_PREBUILT_BIN:$LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN:$PATH"
           export LLVM=1
           make -j"$(nproc)" -C "$(pwd)" exynos2100-r9sxxx_defconfig
-          # -Wno-error: kernel 5.4 de Samsung + clang moderno promueven varios
-          # warnings (p.ej. VLA en proca_certificate.c) a error con -Werror.
           make -j"$(nproc)" -C "$(pwd)" KCFLAGS="-Wno-error"
 
-      - name: Verificar configs Docker en el .config generado
+      - name: Verificar configs en el .config generado
         run: |
-          echo "===== Configs efectivos (variante ${{ matrix.variant.name }}) ====="
-          for c in POSIX_MQUEUE CGROUP_PIDS CGROUP_DEVICE NAMESPACES PID_NS IPC_NS \
-                   NET_NS USER_NS CGROUPS OVERLAY_FS BRIDGE BRIDGE_NETFILTER VETH \
-                   NF_NAT NF_CONNTRACK FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING; do
-            line=$(grep -E "^(CONFIG_${c}=|# CONFIG_${c} )" .config || echo "CONFIG_${c} AUSENTE")
-            echo "$line"
+          echo "===== .config efectivo (variante ${{ matrix.variant.name }}) ====="
+          for c in NAMESPACES UTS_NS NET_NS PID_NS IPC_NS SYSVIPC USER_NS CGROUPS \
+                   CGROUP_DEVICE CGROUP_PIDS OVERLAY_FS VETH NF_NAT POSIX_MQUEUE; do
+            grep -E "^(CONFIG_${c}=|# CONFIG_${c} )" .config || echo "CONFIG_${c} AUSENTE"
           done
-          echo "================================================"
-          # Criticos que SIEMPRE deben estar (no se desactivan en ninguna variante)
-          for must in PID_NS NET_NS IPC_NS NAMESPACES OVERLAY_FS VETH; do
-            if ! grep -q "^CONFIG_${must}=y" .config; then
-              echo "ERROR: CONFIG_${must} no quedo habilitado en el .config final"
-              exit 1
-            fi
+          # El base bueno SIEMPRE debe tener estos (si faltan, algo se rompio)
+          for must in NET_NS NAMESPACES OVERLAY_FS VETH CGROUPS; do
+            grep -q "^CONFIG_${must}=y" .config || { echo "ERROR: falta CONFIG_${must}"; exit 1; }
           done
-          echo "OK: configs criticos base presentes"
+          echo "OK"
 
       - name: Generar dtb / dtbo
         run: |
@@ -121,7 +115,7 @@ jobs:
           cp arch/arm64/boot/Image AnyKernel3/zImage
           cp out/dtbo.img AnyKernel3/dtbo.img
           cd AnyKernel3
-          sed -i "s/ExampleKernel by osm0sis/exynos2100-r9sxxx Lightning Docker ${{ matrix.variant.name }} by parziva-1/g" anykernel.sh
+          sed -i "s/ExampleKernel by osm0sis/exynos2100-r9sxxx Lightning ${{ matrix.variant.name }} by parziva-1/g" anykernel.sh
           sed -i "s/=maguro/=r9s/g" anykernel.sh
           sed -i "s/=toroplus/=/g; s/=toro/=/g; s/=tuna/=/g" anykernel.sh
           sed -i "s#platform/omap/omap_hsmmc.0/by-name/boot#bootdevice/by-name/boot#g" anykernel.sh
