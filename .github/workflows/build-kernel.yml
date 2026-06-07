@@ -1,0 +1,119 @@
+name: Build Lightning Kernel (S21 FE r9s, Docker-enabled)
+
+# Compila el kernel exynos2100-r9sxxx (Samsung Galaxy S21 FE / r9s) con los
+# configs necesarios para Docker y lo empaqueta como zip flasheable (AnyKernel3).
+# Basado en build_menu del repo, adaptado para CI (sube artifact en vez de bashupload).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [local]
+    paths:
+      - 'arch/arm64/configs/exynos2100-r9sxxx_defconfig'
+      - '.github/workflows/build-kernel.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Liberar espacio en disco
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: false
+
+      - name: Checkout del kernel
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Instalar dependencias de build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc build-essential zip unzip curl git wget libssl-dev rsync \
+            flex bison cpio libncurses5 python3 python-is-python3 \
+            lsb-release dos2unix lz4 ccache
+
+      - name: Clonar toolchains (clang r383902 + gcc 4.9 + AnyKernel3)
+        run: |
+          git clone --depth=1 --branch android-11.0.0_r48 \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 aarch64-linux-android-4.9
+          git clone --depth=1 \
+            https://github.com/prorooter007/android_prebuilts_clang_host_linux-x86_clang-6877366 clang-r383902
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+
+      - name: Compilar kernel
+        run: |
+          export ARCH=arm64
+          export PLATFORM_VERSION=11
+          export ANDROID_MAJOR_VERSION=r
+          export SEC_BUILD_CONF_VENDOR_BUILD_OS=13
+          export CROSS_COMPILE="$(pwd)/aarch64-linux-android-4.9/bin/aarch64-linux-android-"
+          export CLANG_TRIPLE="$(pwd)/clang-r383902/bin/aarch64-linux-gnu-"
+          export CLANG_PREBUILT_BIN="$(pwd)/clang-r383902/bin"
+          export LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN="$(pwd)/aarch64-linux-android-4.9/bin"
+          export PATH="$PATH:$LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN:$CLANG_PREBUILT_BIN"
+          export LLVM=1
+          make -j"$(nproc)" -C "$(pwd)" exynos2100-r9sxxx_defconfig
+          make -j"$(nproc)" -C "$(pwd)"
+
+      - name: Verificar configs Docker en el .config generado
+        run: |
+          echo "===== Configs efectivos tras make defconfig ====="
+          for c in POSIX_MQUEUE CGROUP_PIDS CGROUP_DEVICE NAMESPACES PID_NS IPC_NS \
+                   NET_NS USER_NS CGROUPS OVERLAY_FS BRIDGE BRIDGE_NETFILTER VETH \
+                   NF_NAT NF_CONNTRACK FAIR_GROUP_SCHED CFS_BANDWIDTH BLK_DEV_THROTTLING; do
+            line=$(grep -E "^(CONFIG_${c}=|# CONFIG_${c} )" .config || echo "CONFIG_${c} AUSENTE")
+            echo "$line"
+          done
+          echo "================================================"
+          # Falla el build si alguno de los criticos no quedo en =y
+          for must in POSIX_MQUEUE CGROUP_PIDS CGROUP_DEVICE OVERLAY_FS VETH; do
+            if ! grep -q "^CONFIG_${must}=y" .config; then
+              echo "ERROR: CONFIG_${must} no quedo habilitado en el .config final"
+              exit 1
+            fi
+          done
+          echo "OK: todos los configs Docker criticos estan en =y"
+
+      - name: Generar dtb / dtbo
+        run: |
+          chmod +x tools/mkdtimg
+          mkdir -p out
+          DTB_DIR="$(pwd)/arch/arm64/boot/dts"
+          tools/mkdtimg cfg_create out/dtb.img  dt.configs/exynos2100.cfg -d "${DTB_DIR}/exynos"
+          tools/mkdtimg cfg_create out/dtbo.img dt.configs/r9s.cfg       -d "${DTB_DIR}/samsung/r9s"
+
+      - name: Empaquetar con AnyKernel3
+        run: |
+          cp arch/arm64/boot/Image AnyKernel3/zImage
+          cp out/dtbo.img AnyKernel3/dtbo.img
+          cd AnyKernel3
+          sed -i "s/ExampleKernel by osm0sis/exynos2100-r9sxxx Lightning (Docker) by parziva-1/g" anykernel.sh
+          sed -i "s/=maguro/=r9s/g" anykernel.sh
+          sed -i "s/=toroplus/=/g; s/=toro/=/g; s/=tuna/=/g" anykernel.sh
+          sed -i "s#platform/omap/omap_hsmmc.0/by-name/boot#bootdevice/by-name/boot#g" anykernel.sh
+          sed -i "s/backup_file/#backup_file/g; s/replace_string/#replace_string/g; s/insert_line/#insert_line/g; s/append_file/#append_file/g; s/patch_fstab/#patch_fstab/g" anykernel.sh
+          zip -r9 ../Lightning-Docker-r9s.zip * -x .git README.md '*placeholder'
+
+      - name: Subir kernel flasheable (zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lightning-Docker-r9s
+          path: Lightning-Docker-r9s.zip
+          if-no-files-found: error
+
+      - name: Subir Image y dtbo sueltos
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-images
+          path: |
+            arch/arm64/boot/Image
+            out/dtbo.img
+            out/dtb.img
+            .config
